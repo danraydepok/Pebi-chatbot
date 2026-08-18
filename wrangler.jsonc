@@ -5,9 +5,8 @@
   "compatibility_date": "2026-08-01",
   "assets": {
     "directory": "./"
-  }
+  },
   "kv_namespaces": [
     { "binding": "KV", "id": "99f755288e424d87aea7c253ddbee62e" }
   ]
-
 }
