@@ -6,4 +6,8 @@
   "assets": {
     "directory": "./"
   }
+  "kv_namespaces": [
+    { "binding": "KV", "id": "99f755288e424d87aea7c253ddbee62e" }
+  ]
+
 }
