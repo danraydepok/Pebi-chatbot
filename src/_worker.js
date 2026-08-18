@@ -2,7 +2,7 @@ var UPGRADE_CODE = String.raw`
 (function () {
   'use strict';
   if (typeof window.sendChatMessage !== 'function' || typeof window.chatState === 'undefined') return;
-  window.__pebiUpgrade = 'v3';
+  window.__pebiUpgrade = 'v4';
 
   var css = document.createElement('style');
   css.textContent = '.pk-card{background:#0d0d0d;border:1px solid rgba(212,175,55,.25);border-radius:12px;overflow:hidden;margin-top:8px}.pk-item{display:flex;gap:10px;padding:10px;border-bottom:1px solid rgba(255,255,255,.05);align-items:center}.pk-item:last-child{border-bottom:none}.pk-n{color:#fff;font-size:12px;font-weight:700}.pk-p{color:#d4af37;font-size:11px;font-weight:600}.pk-add{margin-left:auto;background:rgba(212,175,55,.15);border:1px solid rgba(212,175,55,.3);color:#d4af37;border-radius:8px;padding:6px 10px;font-size:11px;font-weight:700;cursor:pointer}.pk-chips{display:flex;flex-wrap:wrap;gap:6px;margin-top:10px}.pk-chip{background:rgba(212,175,55,.12);border:1px solid rgba(212,175,55,.3);color:#d4af37;border-radius:20px;padding:7px 12px;font-size:11px;font-weight:700;cursor:pointer;text-decoration:none}.pk-sum{background:#0d0d0d;border:1px dashed rgba(212,175,55,.4);border-radius:10px;padding:10px;margin-top:8px;font-size:12px;color:#e5e7eb}';
@@ -14,12 +14,11 @@ var UPGRADE_CODE = String.raw`
   }
 
   var unread = 0;
-  var badge = document.createElement('span');
-  badge.style.cssText = 'position:fixed;right:14px;bottom:120px;background:#ef4444;color:#fff;border-radius:9999px;min-width:20px;height:20px;font-size:11px;font-weight:800;display:none;align-items:center;justify-content:center;padding:0 5px;z-index:70;box-shadow:0 0 0 3px rgba(10,10,10,.9);';
-  document.body.appendChild(badge);
   function updateBadge() {
-    if (unread > 0 && !chatState.isOpen) { badge.textContent = unread > 9 ? '9+' : String(unread); badge.style.display = 'flex'; }
-    else badge.style.display = 'none';
+    var b = document.getElementById('chat-badge');
+    if (!b) return;
+    if (unread > 0 && !chatState.isOpen) { b.textContent = unread > 9 ? '9+' : String(unread); b.classList.remove('hidden'); }
+    else b.classList.add('hidden');
   }
 
   var _addChatMessage = addChatMessage;
@@ -82,7 +81,7 @@ var UPGRADE_CODE = String.raw`
     return '<div class="pk-chips">' +
       '<button type="button" class="pk-chip" onclick="quickReply(\'pesan\')">🛒 Pesan Sekarang</button>' +
       '<button type="button" class="pk-chip" onclick="showMenuCard()">🥟 Lihat Menu</button>' +
-      '<button type="button" class="pk-chip" onclick="quickReply(\'ongkir\')">🚚 Info Ongkir</button></div>';
+      '<button type="button" class="pk-chip" onclick="quickReply(\'ongkir\')">🚚 Cek Ongkir Lokasi Saya</button></div>';
   }
 
   var _addBot = addBotMessage;
@@ -92,9 +91,63 @@ var UPGRADE_CODE = String.raw`
     return _addBot(text, extra);
   };
 
+  var AREAS = [
+    ['Sawangan / Bojongsari', 3],
+    ['Cinere / Limo / Pancoran Mas', 8],
+    ['Ciputat / Pondok Aren / Tangsel', 12],
+    ['Cimanggis / Tapos', 14],
+    ['Jakarta Selatan', 18],
+    ['Jakarta Barat / Pusat / Timur', 25]
+  ];
+  function hitungOngkirChat(jarak) {
+    var sub = hitungSubtotal();
+    if (jarak <= 5) return { amount: 0, label: 'GRATIS 🎉' };
+    if (jarak <= 10) {
+      if (sub >= 80000) return { amount: 0, label: 'GRATIS 🎉 (belanja ≥ Rp 80.000)' };
+      return { amount: 10000, label: formatRupiah(10000) };
+    }
+    var k = Math.ceil((jarak - 10) / 10) * 10000;
+    return { amount: k, label: formatRupiah(k) };
+  }
+  function setDistanceInput(j) {
+    var el = document.getElementById('customer-distance');
+    if (el) { el.value = j.toFixed(1); if (window.clearFieldError) clearFieldError('customer-distance'); updateAllCalculations(); }
+  }
+  function showOngkirChat(jarak, area) {
+    var o = hitungOngkirChat(jarak);
+    var html = '<div class="pk-sum">📍 Area: <b>' + area + '</b><br>🚚 Jarak dari dapur: <b>' + jarak.toFixed(1) + ' km</b> (garis lurus)<br>💸 Ongkir Kurir Toko: <b>' + o.label + '</b>';
+    if (jarak > 5 && jarak <= 10) html += '<br><i>💡 6–10 km GRATIS jika belanja ≥ Rp 80.000</i>';
+    if (jarak > 20) html += '<br><i>💡 Jarak jauh? Bisa pilih GrabExpress / GoSend di form.</i>';
+    html += '</div><div class="pk-chips"><a class="pk-chip" href="#order" onclick="toggleChatWidget()">✅ Lanjut Racik Pesanan</a><button type="button" class="pk-chip" onclick="fallbackAreaChat()">🔁 Pilih area manual</button></div>';
+    addBotMessage(o.amount === 0 ? 'Asyik, lokasi Anda dapat GRATIS ongkir! 🎉' : 'Ongkir ke lokasi Anda sudah dihitung! 😊', html, true);
+  }
+  window.fallbackAreaChat = function () {
+    var h = '<div class="pk-chips">';
+    AREAS.forEach(function (a, i) { h += '<button type="button" class="pk-chip" onclick="pilihAreaChat(' + i + ')">' + a[0] + '</button>'; });
+    h += '</div>';
+    addBotMessage('Baik, pilih perkiraan area Anda ya: 👇', h, true);
+  };
+  window.pilihAreaChat = function (i) {
+    var a = AREAS[i];
+    setDistanceInput(a[1]);
+    showOngkirChat(a[1], a[0]);
+  };
+  function detectLokasiChat() {
+    if (!navigator.geolocation) { fallbackAreaChat(); return; }
+    addBotMessage('📡 Mendeteksi lokasi Anda... Ketuk "Izinkan" pada permintaan lokasi ya 👆', '', true);
+    navigator.geolocation.getCurrentPosition(function (pos) {
+      var jarak = haversine(CONFIG.SHOP_LAT, CONFIG.SHOP_LON, pos.coords.latitude, pos.coords.longitude);
+      setDistanceInput(jarak);
+      fetch('https://api.bigdatacloud.net/data/reverse-geocode-client?latitude=' + pos.coords.latitude + '&longitude=' + pos.coords.longitude + '&localityLanguage=id')
+        .then(function (r) { return r.json(); })
+        .then(function (j) { showOngkirChat(jarak, j.city || j.locality || j.principalSubdivision || 'Lokasi Anda'); })
+        .catch(function () { showOngkirChat(jarak, 'Lokasi Anda'); });
+    }, function () { fallbackAreaChat(); }, { timeout: 10000, maximumAge: 300000 });
+  }
+
   var pendingDimsumQty = 0;
   function parseOrder(t) {
-    if (!/\b(pesan|order|beli|mau|ambil|mintak)\b/.test(t)) return null;
+    if (!/\b(pesan|order|beli|ambil|mintak)\b/.test(t)) return null;
     var adds = []; var m;
     if (/combo/.test(t)) return [{ type: 'combo' }];
     m = t.match(/(\d+)\s*(?:x|porsi|buah)?\s*(?:dimsum|mentai)(?:[^0-9]{0,12}(4|6|8|10|12|16)\b)?/);
@@ -128,11 +181,10 @@ var UPGRADE_CODE = String.raw`
     [4, 6, 8, 10, 12, 16].forEach(function (s) { h += '<button type="button" class="pk-chip" onclick="confirmDimsum(' + s + ')">' + s + ' pcs</button>'; });
     return h + '</div>';
   }
-  function confirmDimsum(s) {
+  window.confirmDimsum = function (s) {
     if (pendingDimsumQty > 0) { ubahQtyVarian('dimsum_' + s, pendingDimsumQty); pendingDimsumQty = 0; }
     addBotMessage('Siap! Dimsum ' + s + ' pcs sudah masuk racikan. 😊', cartSummaryHTML() + orderButtons(), true);
-  }
-  window.confirmDimsum = confirmDimsum;
+  };
 
   var _send = sendChatMessage;
   sendChatMessage = function () {
@@ -140,7 +192,7 @@ var UPGRADE_CODE = String.raw`
     var text = input ? input.value.trim() : '';
     var lower = text.toLowerCase();
 
-    if (awaitingName && text && text.length <= 40 && !parseOrder(lower) && !/(menu|harga|ongkir|dp|jam|pesan|order|beli|halo|ongkos)/.test(lower)) {
+    if (awaitingName && text && text.length <= 40 && !parseOrder(lower) && !/(menu|harga|ongkir|ongkos|dp|jam|pesan|order|beli|halo|kirim)/.test(lower)) {
       awaitingName = false;
       var nm = saveName(text) || 'Kak';
       addUserMessage(text);
@@ -185,6 +237,15 @@ var UPGRADE_CODE = String.raw`
           addBotMessage('Siap' + (nm3 ? ', Kak ' + nm3 : '') + '! Pesanan sudah saya catat. 😊', cartSummaryHTML() + orderButtons(), true);
         }
       }, 600);
+      return;
+    }
+
+    if (/(ongkir|ongkos|biaya kirim|kirim berapa|berapa kirim)/.test(lower)) {
+      awaitingName = false;
+      addUserMessage(text);
+      if (input) { input.value = ''; onChatInput(); }
+      showTyping();
+      setTimeout(function () { hideTyping(); detectLokasiChat(); }, 400);
       return;
     }
 
@@ -239,8 +300,8 @@ export default {
     const ctype = assetRes.headers.get("content-type") || "";
     if (ctype.includes("text/html")) {
       let html = await assetRes.text();
-      if (html.indexOf("pebi-upgrade-v3") === -1 && html.indexOf("</body>") !== -1) {
-        html = html.replace("</body>", "<script>/*pebi-upgrade-v3*/\n" + UPGRADE_CODE + "\n</script>\n</body>");
+      if (html.indexOf("pebi-upgrade-v4") === -1 && html.indexOf("</body>") !== -1) {
+        html = html.replace("</body>", "<script>/*pebi-upgrade-v4*/\n" + UPGRADE_CODE + "\n</script>\n</body>");
       }
       const headers = new Headers(assetRes.headers);
       headers.delete("content-length");
@@ -250,7 +311,7 @@ export default {
   }
 };
 
-var SYSTEM_PROMPT = "Kamu adalah asisten virtual Pebi's Kitchen, bisnis kuliner di Sawangan, Depok yang menjual Dimsum Mentai dan Ceker Mercon. Jawab dalam Bahasa Indonesia dengan ramah, maksimal 3 kalimat. Jangan gunakan simbol markdown seperti ** atau # dalam jawaban. Jika riwayat percakapan berisi nama pelanggan, selalu sapa dengan namanya. Info: Dimsum Mentai Rp 18.000-Rp 70.000, Ceker Mercon Rp 15.000/porsi, Combo Laris Rp 59.000, ongkir gratis sampai 5 KM, DP 50%, jam operasional Senin-Jumat 11.00-15.00 WIB. Ajak pelanggan memesan lewat tombol Racik Pesanan atau WhatsApp.";
+var SYSTEM_PROMPT = "Kamu adalah asisten virtual Pebi's Kitchen, bisnis kuliner di Sawangan, Depok yang menjual Dimsum Mentai dan Ceker Mercon. Jawab dalam Bahasa Indonesia dengan ramah, maksimal 3 kalimat. Jangan gunakan simbol markdown seperti ** atau # dalam jawaban. Jika riwayat percakapan berisi nama pelanggan, selalu sapa dengan namanya. Info: Dimsum Mentai Rp 18.000-Rp 70.000, Ceker Mercon Rp 15.000/porsi, Combo Laris Rp 59.000, ongkir kurir toko gratis sampai 5 KM, 6-10 KM gratis jika belanja minimal Rp 80.000, lebih dari 10 KM Rp 10.000 per kelipatan 10 KM, DP 50%, jam operasional Senin-Jumat 11.00-15.00 WIB. Ajak pelanggan memesan lewat tombol Racik Pesanan atau WhatsApp.";
 
 var GROQ_MODELS = ["llama-3.3-70b-versatile", "openai/gpt-oss-120b", "openai/gpt-oss-20b"];
 var GEMINI_MODELS = ["gemini-2.5-flash", "gemini-3.5-flash"];
@@ -317,4 +378,5 @@ function jsonResponse(data, status) {
     status: status || 200,
     headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" }
   });
-                                                         }
+      }
+      
