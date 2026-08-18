@@ -13,20 +13,9 @@ export default {
     }
 
     if (url.pathname === "/api/health") {
-      const result = {
-        groqKey: Boolean(env.GROQ_KEY),
-        geminiKey: Boolean(env.GEMINI_KEY),
-        groq: null,
-        gemini: null
-      };
-      if (env.GROQ_KEY) {
-        try { await callGroq("Halo", [], env.GROQ_KEY); result.groq = "OK"; }
-        catch (e) { result.groq = "GAGAL: " + e.message; }
-      }
-      if (env.GEMINI_KEY) {
-        try { await callGemini("Halo", env.GEMINI_KEY); result.gemini = "OK"; }
-        catch (e) { result.gemini = "GAGAL: " + e.message; }
-      }
+      const result = { groqKey: Boolean(env.GROQ_KEY), geminiKey: Boolean(env.GEMINI_KEY), groq: null, gemini: null };
+      if (env.GROQ_KEY) { try { await callGroq("Halo", [], env.GROQ_KEY); result.groq = "OK"; } catch (e) { result.groq = "GAGAL: " + e.message; } }
+      if (env.GEMINI_KEY) { try { await callGemini("Halo", env.GEMINI_KEY); result.gemini = "OK"; } catch (e) { result.gemini = "GAGAL: " + e.message; } }
       return jsonResponse(result);
     }
 
@@ -35,22 +24,14 @@ export default {
         const body = await request.json();
         const message = body.message || "";
         const history = body.history || [];
-        if (!message.trim()) {
-          return jsonResponse({ success: false, error: "Pesan kosong" }, 400);
-        }
+        if (!message.trim()) return jsonResponse({ success: false, error: "Pesan kosong" }, 400);
 
         const errors = [];
         let reply = null;
-
-        if (env.GROQ_KEY) {
-          try { reply = await callGroq(message, history, env.GROQ_KEY); }
-          catch (e) { errors.push("Groq: " + e.message); }
-        } else { errors.push("Groq: key tidak ada"); }
-
-        if (!reply && env.GEMINI_KEY) {
-          try { reply = await callGemini(message, env.GEMINI_KEY); }
-          catch (e) { errors.push("Gemini: " + e.message); }
-        } else if (!reply) { errors.push("Gemini: key tidak ada"); }
+        if (env.GROQ_KEY) { try { reply = await callGroq(message, history, env.GROQ_KEY); } catch (e) { errors.push("Groq: " + e.message); } }
+        else errors.push("Groq: key tidak ada");
+        if (!reply && env.GEMINI_KEY) { try { reply = await callGemini(message, env.GEMINI_KEY); } catch (e) { errors.push("Gemini: " + e.message); } }
+        else if (!reply) errors.push("Gemini: key tidak ada");
 
         if (!reply) return jsonResponse({ success: false, error: errors.join(" | ") }, 500);
         return jsonResponse({ success: true, reply: reply });
@@ -59,24 +40,32 @@ export default {
       }
     }
 
-    return env.ASSETS.fetch(request);
+    const assetRes = await env.ASSETS.fetch(request);
+    const ctype = assetRes.headers.get("content-type") || "";
+    if (ctype.includes("text/html")) {
+      let html = await assetRes.text();
+      if (html.indexOf("chat-upgrade.js") === -1 && html.indexOf("</body>") !== -1) {
+        html = html.replace("</body>", '<script src="/chat-upgrade.js" defer></script>\n</body>');
+      }
+      const headers = new Headers(assetRes.headers);
+      headers.delete("content-length");
+      return new Response(html, { status: assetRes.status, headers: headers });
+    }
+    return assetRes;
   }
 };
 
-var SYSTEM_PROMPT = "Kamu adalah asisten virtual Pebi's Kitchen, bisnis kuliner di Sawangan, Depok yang menjual Dimsum Mentai dan Ceker Mercon. Jawab dalam Bahasa Indonesia dengan ramah, maksimal 3 kalimat. Info: Dimsum Mentai Rp 18.000-Rp 70.000, Ceker Mercon Rp 15.000/porsi, Combo Laris Rp 59.000, ongkir gratis sampai 5 KM, DP 50%, jam operasional Senin-Jumat 11.00-15.00 WIB. Ajak pelanggan memesan lewat tombol Racik Pesanan atau WhatsApp.";
+var SYSTEM_PROMPT = "Kamu adalah asisten virtual Pebi's Kitchen, bisnis kuliner di Sawangan, Depok yang menjual Dimsum Mentai dan Ceker Mercon. Jawab dalam Bahasa Indonesia dengan ramah, maksimal 3 kalimat. Jangan gunakan simbol markdown seperti ** atau # dalam jawaban. Info: Dimsum Mentai Rp 18.000-Rp 70.000, Ceker Mercon Rp 15.000/porsi, Combo Laris Rp 59.000, ongkir gratis sampai 5 KM, DP 50%, jam operasional Senin-Jumat 11.00-15.00 WIB. Jika pelanggan menyebut nama, sapa dengan namanya. Ajak pelanggan memesan lewat tombol Racik Pesanan atau WhatsApp.";
 
 var GROQ_MODELS = ["llama-3.3-70b-versatile", "openai/gpt-oss-120b", "openai/gpt-oss-20b"];
 var GEMINI_MODELS = ["gemini-2.5-flash", "gemini-3.5-flash"];
 
 async function callGroq(message, history, apiKey) {
   const messages = [{ role: "system", content: SYSTEM_PROMPT }];
-
   if (history && history.length) {
     history.slice(-6).forEach(function (h) {
       const content = h.text || h.content || "";
-      if (content) {
-        messages.push({ role: h.role === "assistant" ? "assistant" : "user", content: String(content) });
-      }
+      if (content) messages.push({ role: h.role === "assistant" ? "assistant" : "user", content: String(content) });
     });
   }
   messages.push({ role: "user", content: message });
@@ -86,10 +75,7 @@ async function callGroq(message, history, apiKey) {
     try {
       const res = await fetch("https://api.groq.com/openai/v1/chat/completions", {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "Authorization": "Bearer " + apiKey
-        },
+        headers: { "Content-Type": "application/json", "Authorization": "Bearer " + apiKey },
         body: JSON.stringify({ model: model, messages: messages, max_tokens: 300, temperature: 0.7 })
       });
       if (res.ok) {
@@ -97,9 +83,7 @@ async function callGroq(message, history, apiKey) {
         const content = data.choices && data.choices[0] && data.choices[0].message && data.choices[0].message.content;
         if (content) return content.trim();
         lastError = new Error("Respon Groq kosong");
-      } else {
-        lastError = new Error("HTTP " + res.status + " (model " + model + ")");
-      }
+      } else lastError = new Error("HTTP " + res.status + " (model " + model + ")");
     } catch (e) { lastError = e; }
   }
   throw lastError;
@@ -127,9 +111,7 @@ async function callGemini(message, apiKey) {
           data.candidates[0].content.parts && data.candidates[0].content.parts[0] && data.candidates[0].content.parts[0].text;
         if (text) return text.trim();
         lastError = new Error("Respon Gemini kosong");
-      } else {
-        lastError = new Error("HTTP " + res.status + " (model " + model + ")");
-      }
+      } else lastError = new Error("HTTP " + res.status + " (model " + model + ")");
     } catch (e) { lastError = e; }
   }
   throw lastError;
