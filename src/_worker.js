@@ -257,8 +257,9 @@ var UPGRADE_CODE = String.raw`
 
     return _send();
   };
-
-  /* ===== SECTION TESTIMONI / KOMENTAR PEMBELI ===== */
+  /* ===== LANJUT KE BAGIAN 2 ===== */
+  
+  /* ===== SECTION KOMENTAR PEMBELI ===== */
   var tstRating = 5;
   var sec = document.createElement('section');
   sec.id = 'testimoni';
@@ -344,4 +345,198 @@ var app = document.getElementById('app');
 function esc(s){ var d=document.createElement('div'); d.textContent=s||''; return d.innerHTML; }
 function loginUI(){ app.innerHTML = '<h1>🔐 Login Admin</h1><p class="muted">Area khusus pemilik Pebi\'s Kitchen</p><input id="pw" type="password" placeholder="Password admin"><button onclick="doLogin()">Masuk 👑</button>'; }
 function doLogin(){ fetch('/api/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({password:document.getElementById('pw').value})}).then(function(r){return r.json()}).then(function(d){ if(d.success){ localStorage.setItem('pebi_admin_token', d.token); token=d.token; dash(); } else alert('Password salah!'); }); }
-function 
+function dash(){ fetch('/api/comments').then(function(r){return r.json()}).then(function(d){ var list=d.comments||[]; app.innerHTML='<h1>👑 Admin Pebi\'s Kitchen</h1><p class="muted">Total komentar masuk: '+list.length+'</p><button onclick="dash()">🔄 Refresh</button> <button onclick="logout()" style="background:#ef4444;color:#fff">🚪 Keluar</button><div id="lst"></div>'; document.getElementById('lst').innerHTML = list.length ? list.map(function(c){ var st=''; for(var i=1;i<=5;i++) st+= i<=(c.stars||5)?'★':'☆'; return '<div class="item"><b>'+esc(c.name)+'</b> <span style="color:#d4af37">'+st+'</span><br><span class="muted">📍 '+esc(c.address||'-')+' • '+new Date(c.time).toLocaleDateString('id-ID')+'</span><p>'+esc(c.text)+'</p><button class="del" onclick="delComment(\''+c.id+'\')">🗑 Hapus</button></div>'; }).join('') : '<p class="muted">Belum ada komentar masuk.</p>'; }); }
+function delComment(id){ if(!confirm('Hapus komentar ini?')) return; fetch('/api/comments',{method:'DELETE',headers:{'Content-Type':'application/json','Authorization':'Bearer '+token},body:JSON.stringify({id:id})}).then(function(r){return r.json()}).then(function(d){ if(d.success) dash(); else { alert(d.error||'Gagal'); if(d.error==='Unauthorized') logout(); } }); }
+function logout(){ localStorage.removeItem('pebi_admin_token'); token=''; loginUI(); }
+if(token) dash(); else loginUI();
+</script></body></html>`;
+
+export default {
+  async fetch(request, env, ctx) {
+    const url = new URL(request.url);
+
+    if (request.method === "OPTIONS") {
+      return new Response(null, {
+        headers: {
+          "Access-Control-Allow-Origin": "*",
+          "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+          "Access-Control-Allow-Headers": "Content-Type"
+        }
+      });
+    }
+
+    if (url.pathname === "/api/health") {
+      const result = { groqKey: Boolean(env.GROQ_KEY), geminiKey: Boolean(env.GEMINI_KEY), groq: null, gemini: null };
+      if (env.GROQ_KEY) { try { await callGroq("Halo", [], env.GROQ_KEY); result.groq = "OK"; } catch (e) { result.groq = "GAGAL: " + e.message; } }
+      if (env.GEMINI_KEY) { try { await callGemini("Halo", env.GEMINI_KEY); result.gemini = "OK"; } catch (e) { result.gemini = "GAGAL: " + e.message; } }
+      return jsonResponse(result);
+    }
+
+    if (url.pathname === "/api/chat" && request.method === "POST") {
+      try {
+        const body = await request.json();
+        const message = body.message || "";
+        const history = body.history || [];
+        if (!message.trim()) return jsonResponse({ success: false, error: "Pesan kosong" }, 400);
+
+        const errors = [];
+        let reply = null;
+        if (env.GROQ_KEY) { try { reply = await callGroq(message, history, env.GROQ_KEY); } catch (e) { errors.push("Groq: " + e.message); } }
+        else errors.push("Groq: key tidak ada");
+        if (!reply && env.GEMINI_KEY) { try { reply = await callGemini(message, env.GEMINI_KEY); } catch (e) { errors.push("Gemini: " + e.message); } }
+        else if (!reply) errors.push("Gemini: key tidak ada");
+
+        if (!reply) return jsonResponse({ success: false, error: errors.join(" | ") }, 500);
+        return jsonResponse({ success: true, reply: reply });
+      } catch (err) {
+        return jsonResponse({ success: false, error: "Error: " + err.message }, 500);
+      }
+    }
+
+    if (url.pathname === "/api/login" && request.method === "POST") {
+      if (!env.KV) return jsonResponse({ success: false, error: "KV belum dipasang di wrangler.jsonc" }, 500);
+      try {
+        const body = await request.json();
+        const pass = env.ADMIN_PASSWORD || "pebi2026";
+        if (body.password === pass) {
+          const token = crypto.randomUUID();
+          await env.KV.put("token:" + token, "1", { expirationTtl: 60 * 60 * 24 * 7 });
+          return jsonResponse({ success: true, token: token });
+        }
+        return jsonResponse({ success: false, error: "Password salah" }, 401);
+      } catch (err) {
+        return jsonResponse({ success: false, error: "Error: " + err.message }, 500);
+      }
+    }
+
+    if (url.pathname === "/api/comments") {
+      if (!env.KV) return jsonResponse({ success: false, error: "KV belum dipasang di wrangler.jsonc" }, 500);
+
+      if (request.method === "GET") {
+        const list = (await env.KV.get("comments", "json")) || [];
+        return jsonResponse({ success: true, comments: list });
+      }
+
+      if (request.method === "POST") {
+        try {
+          const body = await request.json();
+          const name = String(body.name || "").trim().slice(0, 60);
+          const address = String(body.address || "").trim().slice(0, 120);
+          const text = String(body.text || "").trim().slice(0, 500);
+          let stars = parseInt(body.stars, 10);
+          if (!stars || stars < 1 || stars > 5) stars = 5;
+          if (!name || !text) return jsonResponse({ success: false, error: "Nama dan komentar wajib diisi" }, 400);
+          const list = (await env.KV.get("comments", "json")) || [];
+          list.unshift({ id: Date.now() + "-" + Math.random().toString(36).slice(2, 8), name: name, address: address, text: text, stars: stars, time: Date.now() });
+          await env.KV.put("comments", JSON.stringify(list.slice(0, 200)));
+          return jsonResponse({ success: true });
+        } catch (err) {
+          return jsonResponse({ success: false, error: "Error: " + err.message }, 500);
+        }
+      }
+
+      if (request.method === "DELETE") {
+        const auth = request.headers.get("Authorization") || "";
+        const token = auth.replace("Bearer ", "");
+        if (!token || (await env.KV.get("token:" + token)) === null) {
+          return jsonResponse({ success: false, error: "Unauthorized" }, 401);
+        }
+        try {
+          const body = await request.json();
+          const list = (await env.KV.get("comments", "json")) || [];
+          await env.KV.put("comments", JSON.stringify(list.filter(c => c.id !== body.id)));
+          return jsonResponse({ success: true });
+        } catch (err) {
+          return jsonResponse({ success: false, error: "Error: " + err.message }, 500);
+        }
+      }
+    }
+
+    if (url.pathname === "/admin" || url.pathname === "/admin/") {
+      return new Response(ADMIN_HTML, { headers: { "Content-Type": "text/html; charset=utf-8" } });
+    }
+
+    const assetRes = await env.ASSETS.fetch(request);
+    const ctype = assetRes.headers.get("content-type") || "";
+    if (ctype.includes("text/html")) {
+      let html = await assetRes.text();
+      if (html.indexOf("pebi-upgrade-v5") === -1 && html.indexOf("</body>") !== -1) {
+        html = html.replace("</body>", "<script>/*pebi-upgrade-v5*/\n" + UPGRADE_CODE + "\n</script>\n</body>");
+      }
+      const headers = new Headers(assetRes.headers);
+      headers.delete("content-length");
+      return new Response(html, { status: assetRes.status, headers: headers });
+    }
+    return assetRes;
+  }
+};
+
+var SYSTEM_PROMPT = "Kamu adalah asisten virtual Pebi's Kitchen, bisnis kuliner di Sawangan, Depok yang menjual Dimsum Mentai dan Ceker Mercon. Jawab dalam Bahasa Indonesia dengan ramah, maksimal 3 kalimat. Jangan gunakan simbol markdown seperti ** atau # dalam jawaban. Jika riwayat percakapan berisi nama pelanggan, selalu sapa dengan namanya. Info: Dimsum Mentai Rp 18.000-Rp 70.000, Ceker Mercon Rp 15.000/porsi, Combo Laris Rp 59.000, ongkir kurir toko gratis sampai 5 KM, 6-10 KM gratis jika belanja minimal Rp 80.000, lebih dari 10 KM Rp 10.000 per kelipatan 10 KM, DP 50%, jam operasional Senin-Jumat 11.00-15.00 WIB. Ajak pelanggan memesan lewat tombol Racik Pesanan atau WhatsApp.";
+
+var GROQ_MODELS = ["llama-3.3-70b-versatile", "openai/gpt-oss-120b", "openai/gpt-oss-20b"];
+var GEMINI_MODELS = ["gemini-2.5-flash", "gemini-3.5-flash"];
+
+async function callGroq(message, history, apiKey) {
+  const messages = [{ role: "system", content: SYSTEM_PROMPT }];
+  if (history && history.length) {
+    history.slice(-6).forEach(function (h) {
+      const content = h.text || h.content || "";
+      if (content) messages.push({ role: h.role === "assistant" ? "assistant" : "user", content: String(content) });
+    });
+  }
+  messages.push({ role: "user", content: message });
+
+  let lastError = new Error("Groq tidak tersedia");
+  for (const model of GROQ_MODELS) {
+    try {
+      const res = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "Authorization": "Bearer " + apiKey },
+        body: JSON.stringify({ model: model, messages: messages, max_tokens: 300, temperature: 0.7 })
+      });
+      if (res.ok) {
+        const data = await res.json();
+        const content = data.choices && data.choices[0] && data.choices[0].message && data.choices[0].message.content;
+        if (content) return content.trim();
+        lastError = new Error("Respon Groq kosong");
+      } else lastError = new Error("HTTP " + res.status + " (model " + model + ")");
+    } catch (e) { lastError = e; }
+  }
+  throw lastError;
+}
+
+async function callGemini(message, apiKey) {
+  let lastError = new Error("Gemini tidak tersedia");
+  for (const model of GEMINI_MODELS) {
+    try {
+      const res = await fetch(
+        "https://generativelanguage.googleapis.com/v1beta/models/" + model + ":generateContent?key=" + apiKey,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            contents: [{ parts: [{ text: message }] }],
+            systemInstruction: { parts: [{ text: SYSTEM_PROMPT }] },
+            generationConfig: { maxOutputTokens: 300, temperature: 0.7 }
+          })
+        }
+      );
+      if (res.ok) {
+        const data = await res.json();
+        const text = data.candidates && data.candidates[0] && data.candidates[0].content &&
+          data.candidates[0].content.parts && data.candidates[0].content.parts[0] && data.candidates[0].content.parts[0].text;
+        if (text) return text.trim();
+        lastError = new Error("Respon Gemini kosong");
+      } else lastError = new Error("HTTP " + res.status + " (model " + model + ")");
+    } catch (e) { lastError = e; }
+  }
+  throw lastError;
+}
+
+function jsonResponse(data, status) {
+  return new Response(JSON.stringify(data), {
+    status: status || 200,
+    headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" }
+  });
+  }
+    
